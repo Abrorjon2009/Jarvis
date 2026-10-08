@@ -112,8 +112,9 @@ class TrayIcon(QSystemTrayIcon):
         self.activated.connect(self.on_tray_click)
         
     def show_dashboard(self):
-        self.app_widget.show()
+        self.app_widget.showNormal()
         self.app_widget.activateWindow()
+        self.app_widget.raise_()
         
     def on_tray_click(self, reason):
         if reason == QSystemTrayIcon.Trigger:
@@ -145,7 +146,9 @@ def main():
     tray.showMessage("Jarvis Dashboard", "I am running here in the background!", QSystemTrayIcon.Information, 3000)
     
     # Open window by default on startup
-    jarvis_app.show()
+    jarvis_app.showNormal()
+    jarvis_app.activateWindow()
+    jarvis_app.raise_()
     
     sys.exit(app.exec_())
 

@@ -176,3 +176,21 @@ def delete_reminder(reminder_id: int):
     cursor.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
     conn.commit()
     conn.close()
+
+def get_due_reminders():
+    now = datetime.datetime.now().isoformat()
+    conn = _get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, chat_id, message, remind_at_iso FROM reminders WHERE remind_at_iso <= ?",
+        (now,)
+    )
+    due = cursor.fetchall()
+    
+    # Delete them so they aren't sent again
+    for row in due:
+        cursor.execute("DELETE FROM reminders WHERE id = ?", (row[0],))
+        
+    conn.commit()
+    conn.close()
+    return [{"id": r[0], "chat_id": r[1], "message": r[2], "remind_at_iso": r[3]} for r in due]

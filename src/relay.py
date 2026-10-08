@@ -16,7 +16,6 @@ import queue_manager
 import agents
 import memory_manager
 import database_manager
-import scheduler
 
 # Configure robust file and console logging
 LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'logs')
@@ -84,7 +83,6 @@ async def generate_response_with_context(chat_id, user_text, history_user_text=N
     
     # Create a temporary history for this generation
     temp_history = history.copy()
-    temp_history.append({"role": "user", "parts": [{"text": user_text}]})
     
     # Keep history manageable and ensure first message always has role 'user'
     if len(temp_history) > 20:
@@ -94,20 +92,46 @@ async def generate_response_with_context(chat_id, user_text, history_user_text=N
         
     hot_context = memory_manager.get_hot_context()
     context_str = "\n".join([f"{k}: {v}" for k, v in hot_context.items()])
-    dynamic_instruction = agents.JARVIS_RESPONDER_PERSONA + f"\n\nCURRENT USER HOT CONTEXT:\n{context_str}"
+    current_time_iso = datetime.datetime.now().isoformat()
+    dynamic_instruction = agents.JARVIS_RESPONDER_PERSONA + f"\n\nCURRENT TIME: {current_time_iso}\n\nCURRENT USER HOT CONTEXT:\n{context_str}"
     
     response_text = None
     max_retries = 3
+    def add_task_tool(description: str, deadline_iso: str = None) -> str:
+        """Adds a task to the user's To-Do list.
+        
+        Args:
+            description: Description of the task.
+            deadline_iso: Optional ISO 8601 deadline (e.g. 2026-10-09T17:00:00).
+        """
+        import database_manager
+        task_id = database_manager.add_task(chat_id, description, deadline_iso)
+        return f"Task added with ID {task_id}"
+        
+    def add_reminder_tool(message: str, remind_at_iso: str) -> str:
+        """Schedules a Telegram notification/reminder for the user at a specific time.
+        
+        Args:
+            message: The message to send to the user when the reminder triggers.
+            remind_at_iso: The precise ISO 8601 time to send the reminder (e.g. 2026-10-09T17:00:00). Must be in the future.
+        """
+        import database_manager
+        reminder_id = database_manager.add_reminder(chat_id, message, remind_at_iso)
+        return f"Reminder scheduled with ID {reminder_id}"
+
     for attempt in range(max_retries):
         try:
-            response = await client.aio.models.generate_content(
+            # We initialize a chat with the history, then send the new message
+            chat = client.aio.chats.create(
                 model='gemini-3.5-flash-lite',
-                contents=temp_history,
+                history=temp_history,
                 config=genai_types.GenerateContentConfig(
                     system_instruction=dynamic_instruction,
-                    temperature=0.7
+                    temperature=0.7,
+                    tools=[add_task_tool, add_reminder_tool]
                 )
             )
+            response = await chat.send_message(user_text)
             if response and response.text:
                 response_text = response.text
                 break
@@ -158,37 +182,7 @@ async def handle_all_messages(message: types.Message) -> None:
     
     try:
         response_text = await generate_response_with_context(chat_id, user_text)
-        
-        # Check if the Responder wants to delegate a task (case-insensitive, tolerates unclosed tags)
-        delegate_match = re.search(r'(?i)<DELEGATE>(.*?)(?:</DELEGATE>|$)', response_text, re.DOTALL)
-        
-        if delegate_match and delegate_match.group(1).strip():
-            task_description = delegate_match.group(1).strip()
-            # Remove the tag from what we show the user
-            display_text = re.sub(r'(?i)<DELEGATE>.*?(?:</DELEGATE>|$)', '', response_text, flags=re.DOTALL).strip()
-            
-            if display_text:
-                reply = await safe_answer(message, display_text)
-                reply_message_id = reply.message_id
-            else:
-                reply = await safe_answer(message, "⏳ <i>Working on it, Sir...</i>")
-                reply_message_id = reply.message_id
-                
-            # Push the task to the Universal Worker queue
-            payload = {
-                "user_id": message.from_user.id if message.from_user else chat_id,
-                "chat_id": chat_id,
-                "message_id": message.message_id,
-                "reply_message_id": message.message_id, # FIX: Always reply to the user's original message, not Jarvis's "Working on it" reply
-                "text": task_description,
-                "date": message.date.isoformat() if message.date else datetime.datetime.utcnow().isoformat(),
-            }
-            task_id = queue_manager.push_task(payload)
-            logging.info(f"Delegated task {task_id} to Worker: {task_description}")
-            
-        else:
-            # Just a normal conversation
-            await safe_answer(message, response_text)
+        await safe_answer(message, response_text)
             
     except Exception as e:
         logging.error(f"Error handling message: {e}", exc_info=True)
@@ -232,11 +226,10 @@ async def response_poller_loop():
             await asyncio.sleep(5)
 
 async def persistent_scheduler_loop():
-    import scheduler
     logging.info("Starting Persistent Scheduler Daemon...")
     while True:
         try:
-            due_reminders = scheduler.get_due_reminders()
+            due_reminders = database_manager.get_due_reminders()
             for r in due_reminders:
                 chat_id = r["chat_id"]
                 message = r["message"]
@@ -273,8 +266,6 @@ async def progress_poller_loop():
             await asyncio.sleep(5)
 
 async def main() -> None:
-    import scheduler
-    scheduler.init_db()
     queue_manager.init_db()
     database_manager.init_db()
     logging.info("Starting Jarvis Responder Relay...")

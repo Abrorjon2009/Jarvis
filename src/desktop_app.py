@@ -98,13 +98,73 @@ class JarvisApp(QWidget):
         self.reminders_layout.addWidget(self.reminders_list)
         self.reminders_tab.setLayout(self.reminders_layout)
         
+        # Brain Control / Action Log Tab
+        self.control_tab = QWidget()
+        self.control_layout = QVBoxLayout()
+        
+        # Health Indicator
+        self.health_layout = QHBoxLayout()
+        self.health_label = QLabel("Brain Status: Checking...")
+        self.health_label.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        self.health_layout.addWidget(self.health_label)
+        self.health_layout.addStretch()
+        
+        self.btn_start = QPushButton("Start Brain")
+        self.btn_restart = QPushButton("Restart")
+        self.btn_stop = QPushButton("Stop Brain")
+        self.btn_start.clicked.connect(self.start_brain)
+        self.btn_restart.clicked.connect(self.restart_brain)
+        self.btn_stop.clicked.connect(self.stop_brain)
+        
+        self.health_layout.addWidget(self.btn_start)
+        self.health_layout.addWidget(self.btn_restart)
+        self.health_layout.addWidget(self.btn_stop)
+        self.control_layout.addLayout(self.health_layout)
+        
+        # Action Log
+        self.control_layout.addWidget(QLabel("Action Log (Live):"))
+        from PyQt5.QtWidgets import QPlainTextEdit
+        self.log_viewer = QPlainTextEdit()
+        self.log_viewer.setReadOnly(True)
+        self.log_viewer.setStyleSheet("background-color: #1e1e1e; color: #a9b7c6; font-family: Consolas;")
+        self.control_layout.addWidget(self.log_viewer)
+        self.control_tab.setLayout(self.control_layout)
+        
+        # Settings Tab
+        self.settings_tab = QWidget()
+        self.settings_layout = QVBoxLayout()
+        self.settings_layout.addWidget(QLabel("Settings & Configuration"))
+        self.settings_layout.addWidget(QCheckBox("Run on Startup"))
+        self.settings_layout.addWidget(QCheckBox("Enable Notifications"))
+        self.settings_layout.addStretch()
+        self.settings_tab.setLayout(self.settings_layout)
+        
         self.tabs.addTab(self.todo_tab, "📝 To-Do List")
         self.tabs.addTab(self.reminders_tab, "⏰ Reminders")
+        self.tabs.addTab(self.control_tab, "🧠 Brain Control")
+        self.tabs.addTab(self.settings_tab, "⚙️ Settings")
         
         main_layout.addWidget(self.tabs)
         self.setLayout(main_layout)
         
         self.refresh_data()
+        
+    def start_brain(self):
+        import subprocess
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        # Execute relay.py in the background
+        subprocess.Popen(["python", "src/relay.py"], cwd=base_dir, creationflags=subprocess.CREATE_NO_WINDOW)
+        self.refresh_data()
+        
+    def stop_brain(self):
+        os.system('taskkill /F /FI "WINDOWTITLE eq python*relay.py*" /T')
+        # On windows, filtering by commandline is tricky with taskkill, but we can do our best or use wmic
+        os.system('wmic process where "commandline like \'%relay.py%\' and name=\'python.exe\'" call terminate')
+        self.refresh_data()
+        
+    def restart_brain(self):
+        self.stop_brain()
+        QTimer.singleShot(1000, self.start_brain)
         
     def refresh_data(self):
         # Update Stats
@@ -116,6 +176,32 @@ class JarvisApp(QWidget):
             self.api_progress.setStyleSheet("QProgressBar::chunk { background-color: #e74c3c; }")
         else:
             self.api_progress.setStyleSheet("QProgressBar::chunk { background-color: #2ecc71; }")
+            
+        # Check Health (Basic check using wmic)
+        import subprocess
+        try:
+            output = subprocess.check_output('wmic process where "commandline like \'%relay.py%\' and name=\'python.exe\'" get processid', shell=True).decode()
+            if "ProcessId" in output and len(output.strip().split()) > 1:
+                self.health_label.setText("Brain Status: 🟢 ONLINE")
+            else:
+                self.health_label.setText("Brain Status: 🔴 OFFLINE")
+        except:
+            self.health_label.setText("Brain Status: 🟡 UNKNOWN")
+            
+        # Update Action Log
+        log_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'logs', 'relay.log')
+        if os.path.exists(log_path):
+            try:
+                with open(log_path, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+                    last_lines = lines[-50:]
+                    current_text = self.log_viewer.toPlainText()
+                    new_text = "".join(last_lines)
+                    if current_text != new_text:
+                        self.log_viewer.setPlainText(new_text)
+                        self.log_viewer.verticalScrollBar().setValue(self.log_viewer.verticalScrollBar().maximum())
+            except Exception:
+                pass
         
         # Update To-Do
         tasks = database_manager.get_tasks(self.chat_id, "pending")

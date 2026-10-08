@@ -124,17 +124,28 @@ def main():
     app.setStyleSheet(qdarkstyle.load_stylesheet_pyqt5())
     app.setQuitOnLastWindowClosed(False)
     
-    # Create a dummy icon if it doesn't exist
-    if not os.path.exists("icon.png"):
+    # Use absolute path for icon
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    icon_path = os.path.join(base_dir, "icon.png")
+    
+    if not os.path.exists(icon_path):
         from PyQt5.QtGui import QPixmap, QColor
         pixmap = QPixmap(64, 64)
         pixmap.fill(QColor("blue"))
-        pixmap.save("icon.png")
+        pixmap.save(icon_path)
     
     jarvis_app = JarvisApp()
     
     tray = TrayIcon(jarvis_app)
+    # Set the actual icon
+    tray.setIcon(QIcon(icon_path))
     tray.show()
+    
+    # Show balloon tip
+    tray.showMessage("Jarvis Dashboard", "I am running here in the background!", QSystemTrayIcon.Information, 3000)
+    
+    # Open window by default on startup
+    jarvis_app.show()
     
     sys.exit(app.exec_())
 

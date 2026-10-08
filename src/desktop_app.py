@@ -17,12 +17,10 @@ class JarvisApp(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Jarvis Dashboard")
-        self.resize(500, 600)
-        self.setWindowFlags(Qt.WindowCloseButtonHint | Qt.WindowMinimizeButtonHint)
+        self.resize(800, 600)
+        # Allow standard window controls so it can be maximized
         
         # We assume one main chat_id for now, or just show all.
-        # Let's get the most recent chat_id from tasks/schedule or hardcode if needed.
-        # For this prototype, we'll just fetch all or filter later.
         self.chat_id = "8895549195" # The chat ID from previous logs
         
         self.init_ui()
@@ -32,21 +30,62 @@ class JarvisApp(QWidget):
         self.timer.start(5000) # Refresh every 5 seconds
         
     def init_ui(self):
-        layout = QVBoxLayout()
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(15)
         
-        # Header / Stats
-        self.stats_label = QLabel("Loading stats...")
-        self.stats_label.setFont(QFont("Arial", 12, QFont.Bold))
-        self.stats_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.stats_label)
+        # Header / Stats Dashboard
+        header_layout = QHBoxLayout()
+        
+        self.title_label = QLabel("Jarvis Dashboard")
+        self.title_label.setFont(QFont("Segoe UI", 18, QFont.Bold))
+        header_layout.addWidget(self.title_label)
+        
+        header_layout.addStretch()
+        
+        self.stats_label = QLabel("API Requests Today: 0 / 100")
+        self.stats_label.setFont(QFont("Segoe UI", 10))
+        header_layout.addWidget(self.stats_label)
+        
+        from PyQt5.QtWidgets import QProgressBar
+        self.api_progress = QProgressBar()
+        self.api_progress.setMaximum(100)
+        self.api_progress.setValue(0)
+        self.api_progress.setFixedWidth(150)
+        self.api_progress.setTextVisible(False)
+        header_layout.addWidget(self.api_progress)
+        
+        main_layout.addLayout(header_layout)
         
         # Tabs
         self.tabs = QTabWidget()
+        self.tabs.setFont(QFont("Segoe UI", 11))
+        
+        # Common list stylesheet
+        list_style = """
+            QListWidget {
+                border: none;
+                background-color: #2b2b2b;
+                border-radius: 8px;
+                padding: 10px;
+            }
+            QListWidget::item {
+                padding: 12px;
+                border-bottom: 1px solid #3d3d3d;
+                margin-bottom: 5px;
+            }
+            QListWidget::item:selected {
+                background-color: #3d3d3d;
+                border-radius: 5px;
+            }
+        """
         
         # To-Do Tab
         self.todo_tab = QWidget()
         self.todo_layout = QVBoxLayout()
         self.todo_list = QListWidget()
+        self.todo_list.setStyleSheet(list_style)
+        self.todo_list.setFont(QFont("Segoe UI", 10))
         self.todo_layout.addWidget(self.todo_list)
         self.todo_tab.setLayout(self.todo_layout)
         
@@ -54,14 +93,16 @@ class JarvisApp(QWidget):
         self.reminders_tab = QWidget()
         self.reminders_layout = QVBoxLayout()
         self.reminders_list = QListWidget()
+        self.reminders_list.setStyleSheet(list_style)
+        self.reminders_list.setFont(QFont("Segoe UI", 10))
         self.reminders_layout.addWidget(self.reminders_list)
         self.reminders_tab.setLayout(self.reminders_layout)
         
-        self.tabs.addTab(self.todo_tab, "To-Do List")
-        self.tabs.addTab(self.reminders_tab, "Reminders")
+        self.tabs.addTab(self.todo_tab, "📝 To-Do List")
+        self.tabs.addTab(self.reminders_tab, "⏰ Reminders")
         
-        layout.addWidget(self.tabs)
-        self.setLayout(layout)
+        main_layout.addWidget(self.tabs)
+        self.setLayout(main_layout)
         
         self.refresh_data()
         
@@ -70,19 +111,24 @@ class JarvisApp(QWidget):
         today = datetime.datetime.now().strftime("%Y-%m-%d")
         requests = database_manager.get_api_requests(today)
         self.stats_label.setText(f"API Requests Today: {requests} / 100")
+        self.api_progress.setValue(min(requests, 100))
+        if requests > 80:
+            self.api_progress.setStyleSheet("QProgressBar::chunk { background-color: #e74c3c; }")
+        else:
+            self.api_progress.setStyleSheet("QProgressBar::chunk { background-color: #2ecc71; }")
         
         # Update To-Do
         tasks = database_manager.get_tasks(self.chat_id, "pending")
         self.todo_list.clear()
         for t in tasks:
-            item = QListWidgetItem(f"[{t['deadline_iso'] or 'No deadline'}] {t['description']}")
+            item = QListWidgetItem(f"🔴 [{t['deadline_iso'] or 'No deadline'}] {t['description']}")
             self.todo_list.addItem(item)
             
         # Update Reminders
         reminders = database_manager.get_reminders(self.chat_id)
         self.reminders_list.clear()
         for r in reminders:
-            item = QListWidgetItem(f"[{r['remind_at_iso']}] {r['message']}")
+            item = QListWidgetItem(f"🔔 [{r['remind_at_iso']}] {r['message']}")
             self.reminders_list.addItem(item)
             
     def closeEvent(self, event):

@@ -1,0 +1,1 @@
+My university admission deadline for Stanford is December 15th.

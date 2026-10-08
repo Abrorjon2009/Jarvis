@@ -43,8 +43,6 @@ dp = Dispatcher()
 client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
 chat_histories = {}
-poll_task_map = {}
-poll_reminder_map = {}
 
 def strip_html_tags(text: str) -> str:
     """Strips all HTML/XML tags from text."""
@@ -129,6 +127,8 @@ async def generate_response_with_context(chat_id, user_text, history_user_text=N
     if not response_text:
         logging.error("Received empty response from Gemini after all retry attempts.")
         response_text = "I apologize, Sir, I am momentarily speechless."
+        
+    database_manager.increment_api_requests()
     
     # Append the clean version to the actual persistent history
     text_to_save = history_user_text if history_user_text is not None else user_text
@@ -144,219 +144,7 @@ async def generate_response_with_context(chat_id, user_text, history_user_text=N
         
     return response_text
 
-# --- Dashboard UI Handlers ---
 
-@dp.message(Command("start", "dashboard"))
-async def cmd_dashboard(message: types.Message):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📋 My Tasks", callback_data="ui_tasks")],
-        [InlineKeyboardButton(text="⏰ My Reminders", callback_data="ui_reminders")],
-        [InlineKeyboardButton(text="📅 My Schedule", callback_data="ui_schedule")]
-    ])
-    await safe_answer(message, "<b>Jarvis Dashboard</b>\nWhat would you like to view, Sir?", parse_mode='HTML', reply_markup=kb)
-
-@dp.message(Command("tasks", "todo"))
-async def cmd_tasks(message: types.Message):
-    await show_tasks(message.chat.id)
-
-@dp.message(Command("reminders"))
-async def cmd_reminders(message: types.Message):
-    await show_reminders(message.chat.id)
-
-@dp.message(Command("schedule"))
-async def cmd_schedule(message: types.Message):
-    await show_schedule(message.chat.id)
-
-async def show_tasks(chat_id: int):
-    tasks = database_manager.get_tasks(str(chat_id), status='pending')
-    if not tasks:
-        await safe_send_message(bot, chat_id, "You have no pending tasks, Sir.")
-        return
-        
-    options = []
-    for t in tasks:
-        deadline_str = f" (Due: {t['deadline_iso'][:10]})" if t.get('deadline_iso') else ""
-        opt_text = f"{t['description']}{deadline_str}"
-        if len(opt_text) > 100:
-            opt_text = opt_text[:97] + "..."
-        options.append(opt_text)
-        
-    if len(options) == 1:
-        options.append("(End of list)")
-        tasks.append({"id": -1})
-        
-    try:
-        msg = await bot.send_poll(
-            chat_id=chat_id,
-            question="📋 Pending Tasks (Check to complete)",
-            options=options,
-            is_anonymous=False,
-            type='regular',
-            allows_multiple_answers=True
-        )
-        poll_task_map[msg.poll.id] = {
-            'chat_id': chat_id,
-            'message_id': msg.message_id,
-            'task_ids': [t['id'] for t in tasks]
-        }
-    except Exception as e:
-        logging.error(f"Failed to send poll: {e}")
-        await safe_send_message(bot, chat_id, "Failed to display tasks as a poll.")
-
-async def show_reminders(chat_id: int):
-    reminders = scheduler.get_pending_reminders(str(chat_id))
-    if not reminders:
-        await safe_send_message(bot, chat_id, "You have no pending reminders, Sir.")
-        return
-        
-    options = []
-    for r in reminders:
-        opt_text = f"{r['message']} (At: {r['trigger_time_iso']})"
-        if len(opt_text) > 100:
-            opt_text = opt_text[:97] + "..."
-        options.append(opt_text)
-        
-    if len(options) == 1:
-        options.append("(End of list)")
-        reminders.append({"id": -1})
-        
-    try:
-        msg = await bot.send_poll(
-            chat_id=chat_id,
-            question="⏰ Pending Reminders (Check to cancel)",
-            options=options,
-            is_anonymous=False,
-            type='regular',
-            allows_multiple_answers=True
-        )
-        poll_reminder_map[msg.poll.id] = {
-            'chat_id': chat_id,
-            'message_id': msg.message_id,
-            'reminder_ids': [r['id'] for r in reminders]
-        }
-    except Exception as e:
-        logging.error(f"Failed to send poll: {e}")
-        await safe_send_message(bot, chat_id, "Failed to display reminders as a poll.")
-
-async def show_schedule(chat_id: int):
-    events = database_manager.get_schedule(str(chat_id))
-    if not events:
-        await safe_send_message(bot, chat_id, "Your schedule is clear, Sir.")
-        return
-    
-    text = "📅 <b>Your Schedule:</b>\n\n"
-    for e in events:
-        text += f"• <b>{e['event_name']}</b>\n  <i>{e['start_time_iso']} - {e['end_time_iso']}</i>\n\n"
-    await safe_send_message(bot, chat_id, text)
-
-@dp.callback_query(F.data.startswith("ui_"))
-async def process_ui_callback(callback_query: types.CallbackQuery):
-    action = callback_query.data.split("_")[1]
-    chat_id = callback_query.message.chat.id
-    await bot.answer_callback_query(callback_query.id)
-    if action == "tasks":
-        await show_tasks(chat_id)
-    elif action == "reminders":
-        await show_reminders(chat_id)
-    elif action == "schedule":
-        await show_schedule(chat_id)
-
-@dp.callback_query(F.data.startswith("complete_task_"))
-async def process_task_complete(callback_query: types.CallbackQuery):
-    task_id = int(callback_query.data.split("_")[2])
-    database_manager.complete_task(task_id)
-    await bot.answer_callback_query(callback_query.id, text="Task completed.")
-    
-    tasks = database_manager.get_tasks(str(callback_query.message.chat.id), status='pending')
-    if not tasks:
-        await bot.edit_message_text(text="All tasks completed, Sir.", chat_id=callback_query.message.chat.id, message_id=callback_query.message.message_id)
-        return
-        
-    text = "📋 <b>Your Pending Tasks:</b>\n\n"
-    keyboard = []
-    row = []
-    for i, t in enumerate(tasks, start=1):
-        deadline_str = f" (Deadline: {t['deadline_iso']})" if t.get('deadline_iso') else ""
-        text += f"<b>{i}.</b> {t['description']}{deadline_str}\n"
-        row.append(InlineKeyboardButton(text=f"✅ {i}", callback_data=f"complete_task_{t['id']}"))
-        if len(row) == 4:
-            keyboard.append(row)
-            row = []
-    if row:
-        keyboard.append(row)
-        
-    kb = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    await bot.edit_message_text(text=text, chat_id=callback_query.message.chat.id, message_id=callback_query.message.message_id, reply_markup=kb, parse_mode="HTML")
-
-@dp.callback_query(F.data.startswith("cancel_reminder_"))
-async def process_reminder_cancel(callback_query: types.CallbackQuery):
-    reminder_id = int(callback_query.data.split("_")[2])
-    scheduler.cancel_reminder(reminder_id)
-    await bot.answer_callback_query(callback_query.id, text="Reminder cancelled.")
-    
-    reminders = scheduler.get_pending_reminders(str(callback_query.message.chat.id))
-    if not reminders:
-        await bot.edit_message_text(text="You have no pending reminders, Sir.", chat_id=callback_query.message.chat.id, message_id=callback_query.message.message_id)
-        return
-        
-    text = "⏰ <b>Your Pending Reminders:</b>\n\n"
-    keyboard = []
-    row = []
-    for i, r in enumerate(reminders, start=1):
-        text += f"<b>{i}.</b> {r['message']}\n<i>At: {r['trigger_time_iso']}</i>\n\n"
-        row.append(InlineKeyboardButton(text=f"❌ Cancel {i}", callback_data=f"cancel_reminder_{r['id']}"))
-        if len(row) == 3:
-            keyboard.append(row)
-            row = []
-    if row:
-        keyboard.append(row)
-        
-    kb = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    await bot.edit_message_text(text=text, chat_id=callback_query.message.chat.id, message_id=callback_query.message.message_id, reply_markup=kb, parse_mode="HTML")
-@dp.poll_answer()
-async def handle_poll_answer(poll_answer: types.PollAnswer):
-    poll_id = poll_answer.poll_id
-    selected_options = poll_answer.option_ids
-    
-    if poll_id in poll_task_map:
-        info = poll_task_map[poll_id]
-        task_ids = info['task_ids']
-        chat_id = info['chat_id']
-        message_id = info['message_id']
-        
-        for i, task_id in enumerate(task_ids):
-            if task_id == -1:
-                continue
-            if i in selected_options:
-                database_manager.set_task_status(task_id, "completed")
-            else:
-                database_manager.set_task_status(task_id, "pending")
-        
-        try:
-            await bot.delete_message(chat_id=chat_id, message_id=message_id)
-        except Exception:
-            pass
-            
-        await show_tasks(chat_id)
-                
-    elif poll_id in poll_reminder_map:
-        info = poll_reminder_map[poll_id]
-        reminder_ids = info['reminder_ids']
-        chat_id = info['chat_id']
-        message_id = info['message_id']
-        
-        for i, reminder_id in enumerate(reminder_ids):
-            if reminder_id == -1:
-                continue
-            if i in selected_options:
-                scheduler.cancel_reminder(reminder_id)
-        
-        try:
-            await bot.delete_message(chat_id=chat_id, message_id=message_id)
-        except Exception:
-            pass
-            
-        await show_reminders(chat_id)
 @dp.message()
 async def handle_all_messages(message: types.Message) -> None:
     chat_id = message.chat.id

@@ -36,6 +36,24 @@ def init_db():
         )
     ''')
     
+    # Statistics
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS statistics (
+            date TEXT PRIMARY KEY,
+            api_requests INTEGER DEFAULT 0
+        )
+    ''')
+    
+    # Reminders
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS reminders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id TEXT NOT NULL,
+            message TEXT NOT NULL,
+            remind_at_iso TEXT NOT NULL
+        )
+    ''')
+    
     conn.commit()
     conn.close()
 
@@ -104,3 +122,57 @@ def get_schedule(chat_id: str, from_time_iso: str = None):
     rows = cursor.fetchall()
     conn.close()
     return [{"id": r[0], "event_name": r[1], "start_time_iso": r[2], "end_time_iso": r[3]} for r in rows]
+
+# ---- Statistics Methods ----
+
+def increment_api_requests(date_str: str = None):
+    if not date_str:
+        date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    conn = _get_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO statistics (date, api_requests) VALUES (?, 0)", (date_str,))
+    cursor.execute("UPDATE statistics SET api_requests = api_requests + 1 WHERE date = ?", (date_str,))
+    conn.commit()
+    conn.close()
+
+def get_api_requests(date_str: str = None) -> int:
+    if not date_str:
+        date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    conn = _get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT api_requests FROM statistics WHERE date = ?", (date_str,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+# ---- Reminders Methods ----
+
+def add_reminder(chat_id: str, message: str, remind_at_iso: str) -> int:
+    conn = _get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO reminders (chat_id, message, remind_at_iso) VALUES (?, ?, ?)",
+        (str(chat_id), message, remind_at_iso)
+    )
+    reminder_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return reminder_id
+
+def get_reminders(chat_id: str):
+    conn = _get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, message, remind_at_iso FROM reminders WHERE chat_id = ? ORDER BY remind_at_iso ASC",
+        (str(chat_id),)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"id": r[0], "message": r[1], "remind_at_iso": r[2]} for r in rows]
+
+def delete_reminder(reminder_id: int):
+    conn = _get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+    conn.commit()
+    conn.close()
